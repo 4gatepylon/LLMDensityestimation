@@ -110,9 +110,16 @@ def collect_all_activations(
         model.train(model_training)
 
 def main():
+    print("="*50 + " [Loading Model] " + "="*50) # DEBUG
     model = HookedTransformer.from_pretrained("gpt2-small", device=device)
+    print("Tokenizer type: ", type(model.tokenizer)) # DEBUG
+
+    print("="*50 + " [Loading Dataset] " + "="*50) # DEBUG
     dataset = load_dataset("Skylion007/openwebtext", split="train")
-    batch_size = 1024 * 256 # NOTE: 1M * 1K => 1B bytes => 1GB ??? that's kind of big lol
+
+    print("="*50 + " [Defining inference + storage parameters] " + "="*50) # DEBUG
+    batch_size = 1024 * 8 # NOTE: 1M * 1K => 1B bytes => 1GB ??? that's kind of big lol
+    inference_batch_size = 128
     max_amount = 1024 * 1024 * 1024 * 1024 + 1 # 32 million roughly, times 1K => 32GB should be a fine amount tbh
     save_every = 16 # NOTE: this is every this many BATCHES
     file_batch_size = batch_size # eh...
@@ -123,21 +130,34 @@ def main():
     output_folder_activations.mkdir(parents=True, exist_ok=True)
     output_folder_losses.mkdir(parents=True, exist_ok=True)
     # ...
-    hook_names = ["blocks.6.hook_resid_pre"]
+    hook_names = ["blocks.8.hook_resid_pre"]
     # ...
     full_activations = []
     full_losses = []
-    print("Length of dataset:", len(dataset))
-    print("Batch size:", batch_size)
-    print("Num batches:", math.ceil(len(dataset) / batch_size))
+
+    print("="*50 + " [Tokenizing] " + "="*50) # DEBUG
+    print("[Skipped]")
+    # dataset_tokenized = [
+    #     model.to_tokens(
+    #         dataset[i:min(i+batch_size, len(dataset))]["text"]
+    #     )
+    #     for i in tqdm.trange(0, len(dataset), batch_size)
+    # ]
+    # dataset_tokenized = torch.stack(dataset_tokenized, dim=0)
+    # assert dataset_tokenized.ndim == 2, f"dataset_tokenized.ndim = {dataset_tokenized.ndim}"
+    # assert dataset_tokenized.shape[0] == len(dataset), f"dataset_tokenized.shape[0] = {dataset_tokenized.shape[0]}, len(dataset) = {len(dataset)}" # fmt: skip
+    print("="*50 + " [Dataset Stats] " + "="*50) # DEBUG
+    print("Length of dataset:", len(dataset)) # DEBUG
+    print("Batch size:", batch_size) # DEBUG
+    print("Num batches:", math.ceil(len(dataset) / batch_size)) # DEBUG
+    # print("Dataset tokenized shape:", dataset_tokenized.shape) # DEBUG
+    print("="*50 + " [Training] " + "="*50) # DEBUG
     for i in tqdm.trange(0, len(dataset), batch_size):
         #### Tokenize, etc... ####
         if i > max_amount:
             break # NOTE: this will happen on a power of 2 so we offset by 1 above to save the batch :P; fmt: skip
-        batch = dataset[i:i+batch_size]
-        assert all(isinstance(x, str) for x in batch), f"Batch is not a list of strings: {batch}" # fmt: skip; fmt: skip
-        # texts = [ex["text"] for ex in batch]
-        tokens = model.to_tokens(batch)
+        tokens = model.to_tokens(dataset[i:i+batch_size]["text"])
+        # tokens = dataset_tokenized[i:i+batch_size]
         assert tokens.ndim == 2, f"tokens.ndim = {tokens.ndim}"
         assert tokens.shape[0] <= batch_size, f"tokens.shape[0] = {tokens.shape[0]}, batch_size = {batch_size}"
         assert tokens.shape[1] <= model.cfg.n_ctx, f"tokens.shape[1] = {tokens.shape[1]}, model.cfg.n_ctx = {model.cfg.n_ctx}"
