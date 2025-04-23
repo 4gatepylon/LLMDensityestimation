@@ -6,7 +6,7 @@ from typing import List
 
 
 def collect_gram_matrix():
-    pass
+    raise NotImplementedError("Not implemented")
 
 def main():
     pass
