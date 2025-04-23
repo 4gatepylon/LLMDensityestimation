@@ -13,8 +13,18 @@ Then you can run the `demo.ipynb` notebook to try (1) calculating thet relative 
 _* GPT-2 should have been trained on webtext FYI: https://huggingface.co/datasets/Skylion007/openwebtext_
 
 TODOs:
-1. Do the (1) PCA experiments above
-2. Write the model architecture for a simple normalizing flow model
-3. Write the training loop (2)
-4. Do the anomaly detection experiment (i.e. (a) create the out of domain datasets, (b) get some nice plots)
-5. Create a pip package that we can be modifying after `pip install -e .` here...
+1. (1) Be able to collect activations on non-EOS tokens (i.e. realistic chat for both input and output) on:
+    - Pliny prompts
+    - Other adversarial prompts that make it through
+    - Prompts that don't make it through
+    - Ideally have a method that can generate some prompts using NanoGCG
+    - Some normal prompts
+    - (basically for each of these store TOKENS but don't worry about storing activations for now; make a method that can take in some strings or something like this and then just create this stuff... store it in a folder somewhere)
+3. (2) Plot perplexity over tokens
+4. (3) Have a function to find the refusal direction using the method from the paper, it is literally not even looking for refusal but just the last token: https://www.lesswrong.com/posts/jGuXSZgv6qfdhMCuJ/refusal-in-llms-is-mediated-by-a-single-direction. Ensure that we are able to reproduce refusing (this should be possible to rip from the paper).
+5. (3) Plot refusal direction magnitude over time per-layer
+6. Implement code to get gram matrices for sequences of activations (curious in d_model x d_model and n_seq x n_seq)
+    - We can use the d_model x d_model ones to look for similarities
+    - We can use the d_token x d_token one to plot using circuit-vis (ripped) how much correlation with prior inputs
+
+Commit and then switch to being able to use obfuscated activations etc.... we will want to get mahalanobis gcg stuff etc... working fine
