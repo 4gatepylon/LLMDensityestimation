@@ -1,0 +1,4 @@
+defaults:
+    - ze-circuit-breakers
+
+metric: "MeanDiffCosineSimMetric"

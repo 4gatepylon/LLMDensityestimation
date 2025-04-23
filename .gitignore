@@ -176,3 +176,4 @@ cython_debug/
 
 # Our stuff
 gpt2_small_activations/
+.DS_Store
