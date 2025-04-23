@@ -119,10 +119,10 @@ def main():
 
     print("="*50 + " [Defining inference + storage parameters] " + "="*50) # DEBUG
     batch_size = 1024 * 8 # NOTE: 1M * 1K => 1B bytes => 1GB ??? that's kind of big lol
-    inference_batch_size = 128
-    max_amount = 1024 * 1024 * 1024 * 1024 + 1 # 32 million roughly, times 1K => 32GB should be a fine amount tbh
-    save_every = 16 # NOTE: this is every this many BATCHES
-    file_batch_size = batch_size # eh...
+    inference_batch_size = 1024
+    max_amount = 256 * 1024 * 1024 * 1024 + 1 # 32 million roughly, times 1K => 32GB should be a fine amount tbh
+    save_every = 4 # NOTE: this is every this many BATCHES
+    file_batch_size = 1024 * 2 # eh...
     save_every_counter = 0
     output_folder_name = Path("gpt2_small_activations")
     output_folder_activations = output_folder_name / "activations"
@@ -183,8 +183,8 @@ def main():
             output_subdir_losses = output_folder_losses / this_batch_name
             output_subdir_acts.mkdir(parents=True, exist_ok=False) # NOTE: these two should not already exist
             output_subdir_losses.mkdir(parents=True, exist_ok=False)
-            # store_tensor2files(full_activations_pt, output_subdir_acts, file_batch_size=file_batch_size)
-            # store_tensor2files(full_losses_pt, output_subdir_losses, file_batch_size=file_batch_size)
+            store_tensor2files(full_activations_pt, output_subdir_acts, file_batch_size=file_batch_size)
+            store_tensor2files(full_losses_pt, output_subdir_losses, file_batch_size=file_batch_size)
             full_activations = []
             full_losses = []
             # NOTE: if you broke you will lose the last batch ay lmao

@@ -18,3 +18,5 @@ TODOs:
 3. Write the training loop (2)
 4. Do the anomaly detection experiment (i.e. (a) create the out of domain datasets, (b) get some nice plots)
 5. Create a pip package that we can be modifying after `pip install -e .` here...
+
+Make sure to `huggingface-cli upload 4gate/gpt2-activations . --repo-type=dataset`
