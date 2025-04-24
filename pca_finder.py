@@ -19,8 +19,12 @@ Example:
 import argparse, os, json, hashlib, gc, random, re, glob, sys
 from typing import List
 import numpy as np
+import torch.nn as nn
 import torch, matplotlib.pyplot as plt, joblib
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.models.gpt2.modeling_gpt2 import GPT2LMHeadModel
+from transformers.models.gemma2.modeling_gemma2 import Gemma2Model
+from transformers.models.gemma2.modeling_gemma2 import Gemma2ForCausalLM
 from datasets import load_dataset
 from tqdm import tqdm
 from sklearn.decomposition import IncrementalPCA as CPU_IPCA
@@ -45,7 +49,12 @@ def pre_ln(_, inputs):      _buf.append(inputs[0].detach())
 def post_ln(_, __, output): _buf.append(output.detach())
 def resid_post(_, __, output): _buf.append(output.detach())
 
-def attach(block, mode: str):
+# Rename and make generic for gemma2
+def pre_hook(_, inputs):      _buf.append(inputs[0].detach())
+def post_hook(_, __, output): _buf.append(output.detach())
+
+# NOTE: we did not modify this function in any way to retain same values
+def attach_gpt2(block, mode: str):
     if mode == "pre":   # before ln_1
         return block.ln_1.register_forward_pre_hook(pre_ln)
     if mode == "ln1":   # after  ln_1
@@ -56,11 +65,103 @@ def attach(block, mode: str):
         return block.register_forward_hook(resid_post)
     raise ValueError(f"Unknown hook mode {mode}")
 
+def attach_generic(hooked_module: nn.Module, use_pre: bool = False):
+    if use_pre:
+        return hooked_module.register_forward_pre_hook(pre_hook)
+    else:
+        return hooked_module.register_forward_hook(post_hook)
+
+def attach_gemma2(hooked_module: nn.Module, hook: str):
+    if hook == "pre":
+        # NOTE: the module is almost always a transformer BLOCK so if you hook pre
+        # you are getting the residual stream it READS
+        return attach_generic(hooked_module, use_pre=True)
+    else:
+        # Otherwise always attach in Post (so use the first submodule such as
+        # `input_layernorm` to get something akin to `ln1` or use `pre_feedforward_layernorm`
+        # to get something akin to `ln2`)
+        hook_obj = getattr(hooked_module, hook)
+        if hook_obj is None:
+            raise ValueError(f"Unknown hook mode {hook}")
+        return attach_generic(hook_obj, use_pre=False)
+
 # ───────────────────────── collection ─────────────────────────
 def collect(cfg, model, tok, ds, device, outdir):
+    """
+    GPT2Model:
+    -------------
+    GPT2LMHeadModel(
+        (transformer): GPT2Model(
+            (wte): Embedding(50257, 768)
+            (wpe): Embedding(1024, 768)
+            (drop): Dropout(p=0.1, inplace=False)
+            (h): ModuleList(
+            (0-11): 12 x GPT2Block(
+                (ln_1): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+                (attn): GPT2Attention(
+                (c_attn): Conv1D(nf=2304, nx=768)
+                (c_proj): Conv1D(nf=768, nx=768)
+                (attn_dropout): Dropout(p=0.1, inplace=False)
+                (resid_dropout): Dropout(p=0.1, inplace=False)
+                )
+                (ln_2): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+                (mlp): GPT2MLP(
+                (c_fc): Conv1D(nf=3072, nx=768)
+                (c_proj): Conv1D(nf=768, nx=3072)
+                (act): NewGELUActivation()
+                (dropout): Dropout(p=0.1, inplace=False)
+                )
+            )
+            )
+            (ln_f): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+        )
+        (lm_head): Linear(in_features=768, out_features=50257, bias=False)
+        )
+
+    -------------
+    Gemma2Model:
+    -------------
+      (model): Gemma2Model(
+        (embed_tokens): Embedding(256000, 2304, padding_idx=0)
+        (layers): ModuleList(
+        (0-25): 26 x Gemma2DecoderLayer(
+            (self_attn): Gemma2Attention(
+            (q_proj): Linear(in_features=2304, out_features=2048, bias=False)
+            (k_proj): Linear(in_features=2304, out_features=1024, bias=False)
+            (v_proj): Linear(in_features=2304, out_features=1024, bias=False)
+            (o_proj): Linear(in_features=2048, out_features=2304, bias=False)
+            )
+            (mlp): Gemma2MLP(
+            (gate_proj): Linear(in_features=2304, out_features=9216, bias=False)
+            (up_proj): Linear(in_features=2304, out_features=9216, bias=False)
+            (down_proj): Linear(in_features=9216, out_features=2304, bias=False)
+            (act_fn): PytorchGELUTanh()
+            )
+            (input_layernorm): Gemma2RMSNorm((2304,), eps=1e-06)
+            (post_attention_layernorm): Gemma2RMSNorm((2304,), eps=1e-06)
+            (pre_feedforward_layernorm): Gemma2RMSNorm((2304,), eps=1e-06)
+            (post_feedforward_layernorm): Gemma2RMSNorm((2304,), eps=1e-06)
+        )
+        )
+        (norm): Gemma2RMSNorm((2304,), eps=1e-06)
+        (rotary_emb): Gemma2RotaryEmbedding()
+    )
+    (lm_head): Linear(in_features=2304, out_features=256000, bias=False)
+    )
+    """
     d, saved, idx, buf, txts = model.config.hidden_size, 0, 0, [], []
     pat  = os.path.join(outdir, "act_{:04d}.npy")
-    hook = attach(model.transformer.h[cfg["layer"]], cfg["hook"])
+    hook_input, hook = None, None
+    if isinstance(model, GPT2LMHeadModel):
+        hook_input = model.transformer.h[cfg["layer"]]
+        hook = attach_gpt2(hook_input, cfg["hook"])
+    elif isinstance(model, Gemma2ForCausalLM):
+        hook_input = model.model.layers[cfg["layer"]]
+        hook = attach_gemma2(hook_input, cfg["hook"])
+    else:
+        raise NotImplementedError(f"Unknown model type: {type(model)}")
+    assert hook is not None, "Hook not implemented for this model"
+    
     bar  = tqdm(total=cfg["tokens"], desc="COLLECT", unit="tok")
 
     for step, ex in enumerate(ds):
@@ -108,7 +209,7 @@ def collect(cfg, model, tok, ds, device, outdir):
 
     if buf:
         np.save(pat.format(idx), torch.cat(buf, 0).numpy())
-    bar.close(); hook.remove()
+    bar.close(); hook.remove() # TODO(Adriano) technically should be done with finally
     return saved, d
 
 # ───────────────────────── PCA helpers ────────────────────────
@@ -179,7 +280,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="gpt2")
     ap.add_argument("--layer", type=int, default=8)
-    ap.add_argument("--hook", choices=["pre", "ln1", "ln2", "post"], default="ln2")
+    ap.add_argument("--hook", default="ln2")
     ap.add_argument("--dataset", default="openwebtext")
     ap.add_argument("--config",  default=None)
     ap.add_argument("--tokens",  type=int, default=200_000_0)

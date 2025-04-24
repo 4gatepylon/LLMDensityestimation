@@ -175,3 +175,11 @@ cython_debug/
 
 # runs are activations
 runs/
+
+# generic stuff we usually wanna avoid
+deleteme*
+
+*.html
+
+gpt2_activations/
+gpt2_small_activations/
