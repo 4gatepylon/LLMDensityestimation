@@ -171,6 +171,7 @@ def plot_pca_histogram(
     if accumulation_values is None:
         H, _, _ = np.histogram2d(P[:, 0], P[:, 1], bins=(x_bins, y_bins))
     else:
+        # https://numpy.org/doc/2.2/reference/generated/numpy.histogram.html
         # Convert accumulation values to numpy if needed
         if isinstance(accumulation_values, torch.Tensor):
             accumulation_values = accumulation_values.cpu().numpy()
@@ -244,7 +245,8 @@ def plot_all_nc2_top_pcs_errs(
         eigenvectors: Float[torch.Tensor, "layer d_model d_model"],
         # Error parameters
         err_array: Float[torch.Tensor, "layer batch"],
-        normalize_by_n_in_bin: bool,
+        normalize_accumulation_values_by_n_in_bin: bool,
+        normalize_accumulation_values_by_n_total: bool,
         # Output parameters
         output_folder: Path,
         # etc...
@@ -256,6 +258,23 @@ def plot_all_nc2_top_pcs_errs(
     if output_folder.exists() and len(list(output_folder.glob("*"))) == 0:
         shutil.rmtree(output_folder)
     output_folder.mkdir(parents=True, exist_ok=False)
-    for layer in range(n_pcs):
-       pass # XXX here is where we need to finish
-       raise NotImplementedError("Not implemented") # XXX
+    for i, j in tqdm.tqdm(itertools.combinations(range(n_pcs), 2), desc="Plotting PCA histograms", total=n_pcs * (n_pcs - 1) // 2):
+        plot_pca_histogram(
+            activations,
+            mean,
+            eigenvectors,
+            i, j,
+            **kwargs,
+            save_to_file=output_folder / f"pc{i+1}_pc{j+1}.png",
+            accumulation_values=err_array, # batch
+            normalize_accumulation_values_by_n_in_bin=normalize_accumulation_values_by_n_in_bin,
+            normalize_accumulation_values_by_n_total=normalize_accumulation_values_by_n_total
+        )
+
+
+def delete_folder_if_empty(folder: Path) -> None:
+    """
+    Delete a folder if it is empty.
+    """
+    if folder.exists() and len(list(folder.glob("*"))) == 0:
+        shutil.rmtree(folder)
