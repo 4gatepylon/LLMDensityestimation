@@ -184,3 +184,4 @@ gpt2_activations/
 gpt2_small_activations/
 sae_sans_plots/
 sae_sans_old_plots/
+!sans_sae_viz_template.html

@@ -402,7 +402,7 @@ def main_helper_plot_distribution_pc_projections(
     res_sae_out_pca_histograms_folder = global_plot_folder_path / "res_sae_out_pca_histograms"
     ln2_pca_histograms_folder = global_plot_folder_path / "ln2_pca_histograms"
     ln2_sae_effect_pca_histograms_folder = global_plot_folder_path / "ln2_sae_effect_pca_histograms"
-    n_pcs = 2 # ehh
+    n_pcs = 4 # ehh
 
     for output_folder, (activations, mean, eigenvectors), per_k in tqdm.tqdm([
         (
@@ -540,7 +540,7 @@ def main_helper_plot_errors_pc_projections(
                             activations[kidx, layer] if per_k else activations[layer],
                             mean[kidx, layer] if per_k else mean[layer],
                             eigenvectors[kidx, layer] if per_k else eigenvectors[layer],
-                            # Error parameters + Plotting n stuff
+                            # Error parameters + Plotting n stuffz
                             err_array, # NOTE: already layered
                             normalize_by_n_in_bin, # normalize by in bin but not total
                             not normalize_by_n_in_bin, # normalize by total not in bin
@@ -581,7 +581,7 @@ def main() -> None:
 
 
     # Shorten the dataset for testing more quickly
-    dataset_size = 5_000 # should be enough for an initial foray
+    dataset_size = 1000 # should be enough for an initial foray
     token_dataset_short = token_dataset[:dataset_size]['tokens']
     dataset_length = token_dataset_short.shape[0]
     sequence_length = token_dataset_short.shape[1]

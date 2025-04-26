@@ -1,0 +1,200 @@
+<!--
+  Simple static visualisation website for SAE images.
+  Author: ChatGPT (OpenAI) O3
+-->
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <title>SAE PCA‑pair visualiser</title>
+        <style>
+            :root {
+                --thumb-size: 360px;
+                --gap: 8px;
+                --head-bg: #222;
+                --head-fg: #fff;
+                --missing-bg: #f5f5f5;
+            }
+            body {
+                margin: 0;
+                font-family: Arial, Helvetica, sans-serif;
+                display: flex;
+                flex-direction: column;
+                height: 100vh;
+            }
+            header {
+                padding: 10px var(--gap);
+                background: var(--head-bg);
+                color: var(--head-fg);
+                display: flex;
+                flex-wrap: wrap;
+                gap: var(--gap);
+                align-items: center;
+            }
+            main {
+                flex: 1 1 auto;
+                overflow: auto;
+                padding: var(--gap);
+            }
+            table {
+                border-collapse: collapse;
+                width: 100%;
+            }
+            th,
+            td {
+                border: 1px solid #ccc;
+                padding: 4px;
+                text-align: center;
+            }
+            th {
+                position: sticky;
+                top: 0;
+                background: #eee;
+                z-index: 2;
+            }
+            tr:first-child th {
+                top: 32px; /* below k header */
+            }
+            thead .kHeader {
+                top: 0;
+            }
+            img {
+                width: var(--thumb-size);
+                height: var(--thumb-size);
+                object-fit: contain;
+            }
+            .missing {
+                width: var(--thumb-size);
+                height: var(--thumb-size);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                background: var(--missing-bg);
+                font-size: 0.8em;
+                color: #999;
+            }
+            select {
+                font-size: 1rem;
+                padding: 4px 6px;
+            }
+        </style>
+    </head>
+    <body>
+        <header>
+            <label>
+                PC pair:
+                <select id="pcSelect"></select>
+            </label>
+            <label>
+                Error type:
+                <select id="errSelect"></select>
+            </label>
+        </header>
+        <main>
+            <table id="imgTable"></table>
+        </main>
+
+        <script>
+            // ----------------- configuration -----------------
+            const config = {
+                pcs: [1, 2],
+                k_values: K_VALUES_2281C139-3A94-43E8-8556-50055385279,
+                hookpoint_layer_values: HOOKPOINT_LAYER_VALUES_5E00BA9F-4CAE-412D-9DC1-4EF643EBE2E2,
+                error_types: ERROR_TYPES_CB2547A2-7C67-4D5C-8059-DCDA565B746E,
+                local_canonical_path2real_path: LOCAL_CANONICAL_PATH2_REAL_PATH_C3F8C34C-0570-496B-B459-1026E4E50C7E,
+            };
+            // --------------------------------------------------
+
+            // Helper to get all unordered PC pairs (n choose 2)
+            function generatePairs(arr) {
+                const out = [];
+                for (let i = 0; i < arr.length; i++) {
+                    for (let j = i + 1; j < arr.length; j++) {
+                        out.push([arr[i], arr[j]]);
+                    }
+                }
+                return out;
+            }
+
+            const pcPairs = generatePairs(config.pcs);
+            const pcSelect = document.getElementById("pcSelect");
+            const errSelect = document.getElementById("errSelect");
+            const imgTable = document.getElementById("imgTable");
+
+            init();
+
+            function init() {
+                // Populate dropdowns
+                pcPairs.forEach(([a, b], idx) => {
+                    const opt = document.createElement("option");
+                    opt.value = `${a},${b}`;
+                    opt.textContent = `PC${a} – PC${b}`;
+                    pcSelect.appendChild(opt);
+                });
+                config.error_types.forEach((e) => {
+                    const opt = document.createElement("option");
+                    opt.value = e;
+                    opt.textContent = e;
+                    errSelect.appendChild(opt);
+                });
+                errSelect.value = config.error_types[0];
+
+                pcSelect.addEventListener("change", buildTable);
+                errSelect.addEventListener("change", buildTable);
+                buildTable();
+            }
+
+            function buildTable() {
+                // Clear table
+                imgTable.innerHTML = "";
+
+                // header row for k values
+                const kHeadRow = document.createElement("tr");
+                const emptyTh = document.createElement("th");
+                emptyTh.className = "kHeader";
+                kHeadRow.appendChild(emptyTh);
+                config.k_values.forEach((k) => {
+                    const th = document.createElement("th");
+                    th.className = "kHeader";
+                    th.textContent = `k = ${k}`;
+                    kHeadRow.appendChild(th);
+                });
+                imgTable.appendChild(kHeadRow);
+
+                const [pc1, pc2] = pcSelect.value.split(",").map(Number);
+                const errorType = errSelect.value;
+
+                config.hookpoint_layer_values.forEach((hook) => {
+                    const tr = document.createElement("tr");
+                    const label = document.createElement("th");
+                    label.textContent = hook;
+                    tr.appendChild(label);
+
+                    config.k_values.forEach((k) => {
+                        const td = document.createElement("td");
+                        const key1 = `pc${pc1}_pc${pc2}:k_${k}:${hook}:${errorType}`;
+                        const key2 = `pc${pc2}_pc${pc1}:k_${k}:${hook}:${errorType}`;
+                        const src =
+                            config.local_canonical_path2real_path[key1] ||
+                            config.local_canonical_path2real_path[key2];
+                        if (src) {
+                            const img = document.createElement("img");
+                            img.src = src;
+                            img.loading = "lazy";
+                            img.alt = key1;
+                            td.appendChild(img);
+                        } else {
+                            const div = document.createElement("div");
+                            div.className = "missing";
+                            div.textContent = "N/A";
+                            td.appendChild(div);
+                        }
+                        tr.appendChild(td);
+                    });
+
+                    imgTable.appendChild(tr);
+                });
+            }
+        </script>
+    </body>
+</html>
