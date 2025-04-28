@@ -9,6 +9,8 @@ $ python collect_gpt2_act.py --out_dir runs/owt2_l6 \
                              --dataset owt2 --max_tokens 1_000_000
 $ python collect_gpt2_act.py --dataset c4 --batch 8 --shard_size 100_000 \
                              --out_dir runs/c4_l6
+
+TODO please stop using np.load/np.save with pickling
 """
 
 import argparse, os, math, numpy as np, wandb, torch

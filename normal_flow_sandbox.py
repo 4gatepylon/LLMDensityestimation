@@ -21,6 +21,7 @@ import math
 import torch
 from torch import nn
 from tqdm import tqdm
+from safetensors.torch import save_file
 
 # Import the scheduler
 from torch.optim.lr_scheduler import CosineAnnealingLR 
@@ -203,8 +204,8 @@ def train(args):
     wandb.log({"samples": wandb.Histogram(samples)})
 
     # Save the trained model state
-    save_path = f"trained_flow_dim{args.dim}.pth"
-    torch.save(flow.state_dict(), save_path)
+    save_path = f"trained_flow_dim{args.dim}.safetensors"
+    save_file(flow.state_dict(), save_path)
     print(f"Trained model state dict saved to {save_path}")
 
 # -----------------------------------------------------------------------------

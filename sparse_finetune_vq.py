@@ -20,7 +20,7 @@ from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 import wandb
-
+from checkpoint_fs import load_checkpoint, save_checkpoint
 # ←–––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
 # IMPORT THE UTILITIES FROM coder.py  (same folder)
 # –––––––––––––––––––––––––––––––––––––––––––––––––––––––––––→
@@ -462,6 +462,7 @@ def _plot_residual_vq_codebooks_sparse(vq_stage: ProjectedVQ, usage: torch.Tenso
     plt.savefig(path);
     plt.close(fig)
 
+
 # ───────────────────────── main loop ─────────────────────────
 def main():
     A = get_args()
@@ -483,26 +484,7 @@ def main():
     # --- Load Checkpoint and Determine Hyperparameters ---
     print(f"Loading checkpoint: {A.checkpoint}")
     # Load to CPU first for inspection without occupying GPU memory
-    loaded_data = torch.load(A.checkpoint, map_location='cpu')
-    H = None
-    state_dict = None
-
-    if isinstance(loaded_data, dict) and 'hyperparameters' in loaded_data and 'state_dict' in loaded_data:
-        # New format checkpoint
-        print("Detected new checkpoint format with saved hyperparameters.")
-        H = loaded_data['hyperparameters']
-        state_dict = loaded_data['state_dict']
-        print("Loaded hyperparameters:", H)
-    elif isinstance(loaded_data, dict): # Check if it's a dict (potential state_dict)
-         # Assume old format (state_dict only)
-        print("Detected old checkpoint format (state_dict only).")
-        state_dict = loaded_data
-        H = infer_hyperparameters(state_dict) # Infer H from the state_dict
-    else:
-        raise TypeError(f"Loaded checkpoint is of unexpected type: {type(loaded_data)}. Expected dict.")
-
-    if H is None or state_dict is None:
-         raise ValueError("Could not determine hyperparameters or state_dict from checkpoint.")
+    H, state_dict = load_checkpoint(A.checkpoint, infer_hyperparameters)
 
     # --- Initialize Model using Determined Hyperparameters ---
     print("Initializing model architecture...")
@@ -625,7 +607,7 @@ def main():
                 'hyperparameters': H, 
                 'state_dict': vq.state_dict()
             }
-            torch.save(intermediate_save_data, ck)
+            save_checkpoint(ck, H, vq.state_dict())
             wandb.save(ck)
 
         # ---- plots ----
@@ -647,17 +629,13 @@ def main():
 
         sched.step()
 
-    torch.save(vq.state_dict(), f"{A.ckpt_dir}/final_sparse.pt")
+    save_checkpoint(f"{A.ckpt_dir}/final_sparse.pt", None, vq.state_dict())
     print("Fine-tuning complete → checkpoints written to", A.ckpt_dir)
 
     # --- Save Final Model (always in the NEW format) ---
-    final_save_path = f"{A.ckpt_dir}/final_sparse.pt"
+    final_save_path = f"{A.ckpt_dir}/final_sparse.safetensors"
     # H was determined earlier either from new checkpoint or inferred from old one
-    final_save_data = {
-        'hyperparameters': H,
-        'state_dict': vq.state_dict()
-    }
-    torch.save(final_save_data, final_save_path)
+    save_checkpoint(final_save_path, H, vq.state_dict())
     print(f"Final fine-tuned model saved with hyperparameters to {final_save_path}")
 
 if __name__ == '__main__':

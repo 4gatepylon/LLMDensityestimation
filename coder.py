@@ -10,6 +10,8 @@ Key new CLI flags
 Quick start (no renorm, 2 residual stages):
     python projected_vq_package.py train \
            --data_glob './runs/*.npy' --stages 2
+
+TODO please stop using np.load/np.save with pickling
 """
 from __future__ import annotations
 import argparse, glob, random, gc, math, os
@@ -27,6 +29,7 @@ import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from sklearn.metrics.pairwise import cosine_similarity
 import matplotlib.gridspec as gridspec # Import gridspec
+from checkpoint_fs import save_checkpoint
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 1.  Single‑stage Projected VQ
@@ -520,7 +523,7 @@ def train_cli():
         },
         'state_dict': vq.state_dict()
     }
-    torch.save(save_data, model_save_path)
+    save_checkpoint(model_save_path, save_data['hyperparameters'], save_data['state_dict'])
     print(f"Training finished. Model saved with hyperparameters to {model_save_path}")
 
 # ──────────────────────────────────────────────────────────────────────────────

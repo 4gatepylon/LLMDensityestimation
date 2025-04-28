@@ -9,6 +9,8 @@ sae_highfreq_heatmap.py  (v4 – fixed)
     – decoder rows indexed with W_dec[i]
     – .detach() before .cpu().numpy() to avoid requires‑grad error
     – copy() NumPy mmap slice to avoid "not writable" warning
+
+TODO please stop using np.load/np.save with pickling
 """
 import argparse, os, glob, csv, sys, pathlib, time
 import numpy as np

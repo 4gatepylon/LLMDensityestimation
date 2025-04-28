@@ -175,3 +175,6 @@ cython_debug/
 
 # runs are activations
 runs/
+models_safetensors/
+models_pt/
+deleteme*

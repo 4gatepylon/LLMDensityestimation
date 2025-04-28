@@ -15,6 +15,8 @@ Hook choices
 
 Example:
     python mini_pca_debug.py --layer 8 --hook ln2 --tokens 3_000_000
+
+TODO please stop using np.load/np.save with pickling
 """
 import argparse, os, json, hashlib, gc, random, re, glob, sys
 from typing import List
