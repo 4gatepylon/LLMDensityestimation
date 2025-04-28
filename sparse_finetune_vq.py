@@ -24,7 +24,7 @@ from checkpoint_fs import load_checkpoint, save_checkpoint
 # ←–––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
 # IMPORT THE UTILITIES FROM coder.py  (same folder)
 # –––––––––––––––––––––––––––––––––––––––––––––––––––––––––––→
-from vq_scripts.coder import (
+from coder import (
     ResidualVQ,      # stacked VQ module
     NPZDataset,      # helper dataset that reads *.npy rows
     ProjectedVQ      # Need this for type hint in plot function

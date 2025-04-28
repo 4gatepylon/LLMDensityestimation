@@ -35,7 +35,19 @@ from checkpoint_fs import save_checkpoint
 # 1.  Single‑stage Projected VQ
 # ──────────────────────────────────────────────────────────────────────────────
 class ProjectedVQ(nn.Module):
-    """A *single* PQ‑style codebook block with optional bias and support for dead codes/books."""
+    """
+    A *single* PQ-style codebook block with optional bias and support for dead codes/books.
+    
+    NOTE this ENTIRE thing is written by o3 with very minimal supervision.
+
+    It looks like it will first project things onto rank self.r subspaces
+    and do this in self.B num books each with self.C codes. In other words,
+    we project for each book onto a self.r dimensional subspace and then we
+    perform vector quantization on these subspaces using self.C codes (obviously
+    of lower dimensionality). Then obviously each of these lower rank codes
+    corresponds to a higher rank vector in the original space using the basis
+    from the projection.
+    """
 
     def __init__(
         self,
@@ -56,7 +68,7 @@ class ProjectedVQ(nn.Module):
     ) -> None:
         super().__init__()
         self.d, self.B, self.C = dim, num_books, num_codes
-        self.r = rank or dim // num_books
+        self.r = rank or dim // num_books # XXX rank should be passed ngl wtf
         self.normalize = normalize
         self.l1_threshold = l1_threshold # Store threshold
         self.temp_target = temp_target   # Store temp target
@@ -81,6 +93,8 @@ class ProjectedVQ(nn.Module):
 
     # ---------------------------------------------------------------------
     @torch.no_grad()
+    # TODO(Adriano) seems to be dead code (only called by `ResidualVQ` update_dead_status
+    # which in turn is dead code... is this an o3 issue?)
     def update_dead_status(self):
         """Updates the dead status of codes and books based on L1 norm."""
         if self.l1_threshold <= 0: # Skip if threshold is non-positive
@@ -110,7 +124,13 @@ class ProjectedVQ(nn.Module):
         # We don't zero out 'k', gradients should handle it implicitly via forward pass masking
 
     # ---------------------------------------------------------------------
-    def forward(self, x: torch.Tensor, *, return_prob=False):
+    def forward(
+            self,
+            x: torch.Tensor,
+            *args,
+            return_prob: bool = False,
+            **kwargs
+    ) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         E, d = x.shape
         P = F.normalize(self.projector, dim=-1) if self.normalize else self.projector
 
@@ -125,6 +145,7 @@ class ProjectedVQ(nn.Module):
 
         # 1. Calculate projection of centered input efficiently using masked parameters
         z_proj = torch.einsum("ed,brd->ebr", x, P_masked)
+        # TODO why is this bias in higher dimensional space?
         bias_proj = torch.einsum("bd,brd->br", biases_masked, P_masked) # Use masked P here too
         z = z_proj - bias_proj.unsqueeze(0) # Shape (E, B, r).
 
@@ -249,6 +270,141 @@ class ProjectedVQ(nn.Module):
         active_codes = self.num_active_codewords()
         active_books = self.num_active_codebooks()
         print(f"{prefix}Active Books: {active_books}/{total_books}, Active Codes: {active_codes}/{total_codes}")
+    
+
+    # ---------- 1) ENCODER ----------
+    def encode(
+            self,
+            x: torch.Tensor,
+            *args,
+            hard: bool = False,
+            flatten: bool = True,
+            **kwargs
+    ) -> torch.Tensor:
+        """
+        Args
+        ----
+        x           : (E, d) input vectors
+        hard        : if True → straight-through argmax → one-hot codes
+        flatten     : if True → output shape (E, B*C); else (E, B, C)
+        return_prob : also return softmax probabilities (useful for analysis)
+
+        Returns
+        -------
+        probs       : (E, B, C) tensor of probabilities (of each code; each INDEX corresponds to a code)
+        """
+        if hard:
+            raise NotImplementedError("Hard encoding not implemented")
+        # NOTE: this is basically copied from `forward` above but modified in a few places...
+        E, d = x.shape
+        P = F.normalize(self.projector, dim=-1) if self.normalize else self.projector # norm 1 (euclidean)
+        active_book_mask_proj = (~self.is_book_dead).view(self.B, 1, 1).float()
+        active_book_mask_bias = (~self.is_book_dead).view(self.B, 1).float()
+        P_masked = P * active_book_mask_proj
+        biases_masked = self.biases * active_book_mask_bias
+        z_proj = torch.einsum("ed,brd->ebr", x, P_masked)
+        bias_proj = torch.einsum("bd,brd->br", biases_masked, P_masked) # Use masked P here too
+        # NOTE these are the projected points!
+        # NOTE now we merely need to suck them into each of the cluster centers
+        z = z_proj - bias_proj.unsqueeze(0) # Shape (E, B, r)
+
+        # 2. Find nearest code displacement, masking dead codes (copied also from `forward`)
+        dist2 = (z.unsqueeze(2) - self.codebook.unsqueeze(0)).pow(2).sum(-1) # Shape (E, B, C)
+        dist2 = dist2.masked_fill(self.is_code_dead.unsqueeze(0), 1e20)
+        prob = F.softmax(-self.k.clamp(min=1e-9).view(1, self.B, 1) * dist2, -1) # Shape (E, B, C)
+        prob = prob.masked_fill(self.is_code_dead.unsqueeze(0), 0)
+        # NOTE for every vector we have now in each codebook given it a probability of being that code
+        # This is the latent
+        assert prob.shape == (E, self.B, self.C) 
+        if flatten:
+            return prob.view(E, -1) # B*C is our number of codes
+        return prob
+
+    # ---------- 2) DECODER ----------
+    def decode(self, probs: torch.Tensor, *args, **kwargs):
+        """
+        Reconstruct from code-usage vectors.
+
+        Args
+        ----
+        probs      : (E, B*C) if flattened else (E, B, C)
+        """
+        active_book_mask_local = (~self.is_book_dead).view(1, self.B, 1).float() # For E,B,r tensor
+
+        # 1. Unflatten this stuff
+        E = probs.shape[0]
+        if probs.dim() == 2:
+            probs = probs.view(E, self.B, self.C)
+        assert probs.shape == (E, self.B, self.C)
+
+        # Expected displacement in r-space
+        # TODO(Adriano) what is this?
+        recon_local_disp = (probs.unsqueeze(-1) * self.codebook.unsqueeze(0)).sum(2)  # (E,B,r)
+        recon_local_disp = recon_local_disp * active_book_mask_local
+
+        # Back-project + add biases (same lines as old forward 4–5)
+        P = F.normalize(self.projector, dim=-1) if self.normalize else self.projector
+        # We are we summing over book dimension? TODO(Adriano) I think this is because we take on code per book?
+        # TODO(Adriano) I guess we sum over each book and rank... hmmm...
+        recon_disp = torch.einsum("ebr,brd->ed", recon_local_disp, P)
+        assert recon_disp.shape == (E, self.d)
+        recon      = recon_disp + (self.biases * (~self.is_book_dead).view(self.B, 1).float()).sum(0)
+        assert recon.shape == (E, self.d)
+        return recon
+
+    # ---------- 3) TRAINING FORWARD ----------
+    def enc_dec_forward(self, x: torch.Tensor, *, hard: bool = False, return_prob: bool = False) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        This should be roughyl the same as `forward` but it uses encode and decode
+        instead. We unit test this in the test_coder.py file.
+        """
+        E = x.shape[0]
+        prob = self.encode(x, hard=hard, flatten=False, return_prob=True)
+        recon = self.decode(prob, unflatten=False)
+
+        # --- identical loss computation but now using `prob` & `recon` ---
+        P = F.normalize(self.projector, dim=-1) if self.normalize else self.projector
+        mse     = F.mse_loss(recon, x)
+        commit  = F.mse_loss(recon.detach(), x)
+        prob_for_log = prob.clamp_min(0.)
+        safe_log_prob = (prob_for_log + 1e-20).log()
+        entropy = -(prob * safe_log_prob).sum(-1) # Sum over C
+        # Average entropy only over active books
+        num_active_books = (~self.is_book_dead).sum().clamp(min=1) # Avoid division by zero
+        avg_entropy_per_active_book = entropy.sum(dim=0) / E # Sum over E -> shape [B]
+        masked_entropy = avg_entropy_per_active_book * (~self.is_book_dead).float()
+        final_entropy = masked_entropy.sum() / num_active_books # Average over active books
+        loss = mse + self.beta * commit - self.gamma * final_entropy
+        # Add Temperature Penalty (averaged over active books)
+        if self.temp_factor > 0:
+            active_k = self.k[~self.is_book_dead] # Select k for active books
+            if active_k.numel() > 0: # Only add penalty if there are active books
+                temp_penalty = self.temp_factor * ((active_k - self.temp_target)**2).mean()
+                loss += temp_penalty
+
+        # Orthogonality constraint only on active projectors
+        if self.orth_lambda > 0:
+            active_indices = torch.where(~self.is_book_dead)[0]
+            if len(active_indices) > 1:
+                P_active = P[active_indices] # Use original P or P_masked? P makes more sense
+                P_norm_active = F.normalize(P_active, dim=-1)
+                dot_active = torch.einsum("brd,crd->bc", P_norm_active, P_norm_active)
+                identity_active = torch.eye(len(active_indices), device=x.device)
+                orth_loss = self.orth_lambda * ((dot_active - identity_active) ** 2).mean()
+                loss += orth_loss
+
+        # --- Bookkeeping ---
+        with torch.no_grad():
+            # Usage should only accumulate for non-dead codes
+            self.usage += prob.sum(0) * (~self.is_code_dead).float()
+        self._step += 1
+
+        # --- Return ---
+        out = (loss, recon)
+        if return_prob:
+            # Return probabilities, masking dead codes explicitly just in case
+            out += (prob.masked_fill(self.is_code_dead.unsqueeze(0), 0),)
+        return out
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 2.  Residual stack wrapper
@@ -285,6 +441,7 @@ class ResidualVQ(nn.Module):
         return out
 
     @torch.no_grad()
+    # TODO(Adriano) seems to be dead code
     def update_dead_status(self):
         """Calls update_dead_status on all blocks."""
         print("Updating dead status across all stages...")
