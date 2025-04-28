@@ -252,7 +252,10 @@ class FiletreeParser:
         assert real_path_obj.exists(), f"Real path {real_path_obj} does not exist"
         return (
             # NOTE: in s3 we group by root.name
-            f"https://{cls.s3_root_url}/{root.name}/{relative_path}" if using_s3 else 
+            # TODO(Adriano) switch everything over to HTTPS but for now we have the situation that
+            # we have to do http for the website overall, so the images need to be too or else we
+            # get mixed-content warnings.
+            f"http://{cls.s3_root_url}/{root.name}/{relative_path}" if using_s3 else 
             f"file://{real_path_obj.resolve().as_posix()}" if not relative_path else
             # NOTE your root must have a parent: we will copy root into the output folder
             f"file://{real_path_obj.relative_to(root.parent).as_posix()}"

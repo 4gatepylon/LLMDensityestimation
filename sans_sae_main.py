@@ -22,6 +22,7 @@ from jaxtyping import Float, Int
 from transformer_lens import ActivationCache
 from transformer_lens.components import TransformerBlock, LayerNormPre
 from sae_lens import HookedSAETransformer, SAE
+import pydantic
 
 # load stuff from our own code
 from sans_sae_lib.schemas import ExtractedActivations, FlattenedExtractedActivations
@@ -396,13 +397,13 @@ def main_helper_plot_pc_cosine_sims(
 def main_helper_plot_distribution_pc_projections(
     comparer: ResidAndLn2Comparer,
     extracted_activations_flattened: FlattenedExtractedActivations,
-    global_plot_folder_path: Path
+    global_plot_folder_path: Path,
+    n_pcs: int,
 ) -> None:
     res_sae_in_pca_histograms_folder = global_plot_folder_path / "res_sae_in_pca_histograms"
     res_sae_out_pca_histograms_folder = global_plot_folder_path / "res_sae_out_pca_histograms"
     ln2_pca_histograms_folder = global_plot_folder_path / "ln2_pca_histograms"
     ln2_sae_effect_pca_histograms_folder = global_plot_folder_path / "ln2_sae_effect_pca_histograms"
-    n_pcs = 4 # ehh
 
     for output_folder, (activations, mean, eigenvectors), per_k in tqdm.tqdm([
         (
@@ -456,13 +457,13 @@ def main_helper_plot_distribution_pc_projections(
 def main_helper_plot_errors_pc_projections(
     comparer: ResidAndLn2Comparer,
     extracted_activations_flattened: FlattenedExtractedActivations,
-    global_plot_folder_path: Path
+    global_plot_folder_path: Path,
+    n_pcs: int,
 ) -> None:
     res_sae_in_pca_histograms_folder = global_plot_folder_path / "res_sae_in_err_pca_histograms"
     res_sae_out_pca_histograms_folder = global_plot_folder_path / "res_sae_out_err_pca_histograms"
     ln2_pca_histograms_folder = global_plot_folder_path / "ln2_err_pca_histograms"
     ln2_sae_effect_pca_histograms_folder = global_plot_folder_path / "ln2_sae_effect_err_pca_histograms"
-    n_pcs = 2 # ehh, copy from above lmao
     for output_folder, per_k, (activations, mean, eigenvectors, err_norm, err_var_explained, err_mse) in tqdm.tqdm([
         (
             res_sae_in_pca_histograms_folder,
@@ -548,8 +549,21 @@ def main_helper_plot_errors_pc_projections(
                             sub_output_folder,
                         )
 
+# TODO(Adriano) parameterize with yaml
+# class StorageArgs(pydantic.BaseModel):
+#     """This basically defines where to store things."""
+#     global_plot_folder_path: Path
+
 @click.command()
-def main() -> None:
+@click.option(
+    "--global-plot-folder-path",
+    "-g",
+    "-o",
+    "-p",
+    type=click.Path(exists=False),
+    help="The folder to store the plots in."
+)
+def main(global_plot_folder_path: Path) -> None:
     """
     A short frontend CLI to the same general functionality as `sans_sae.ipynb`. The
     generation of the heatmaps, etc... can take a really long time.
@@ -582,6 +596,7 @@ def main() -> None:
 
     # Shorten the dataset for testing more quickly
     dataset_size = 1000 # should be enough for an initial foray
+    n_pcs = 4
     token_dataset_short = token_dataset[:dataset_size]['tokens']
     dataset_length = token_dataset_short.shape[0]
     sequence_length = token_dataset_short.shape[1]
@@ -605,7 +620,9 @@ def main() -> None:
     extracted_activations_flattened: FlattenedExtractedActivations = extracted_activations.flatten()
 
     # 6. Setup FS
-    global_plot_folder_path = Path("sae_sans_plots")
+    if global_plot_folder_path is None:
+        raise ValueError("global_plot_folder_path is required")
+    global_plot_folder_path = Path(global_plot_folder_path)
     if global_plot_folder_path.exists() and len(list(global_plot_folder_path.glob("*"))) == 0:
         shutil.rmtree(global_plot_folder_path)
     global_plot_folder_path.mkdir(parents=True, exist_ok=False)
@@ -615,7 +632,7 @@ def main() -> None:
     main_helper_plot_error_value_data(
         comparer,
         extracted_activations_flattened,
-        global_plot_folder_path
+        global_plot_folder_path,
     )
 
     # 8. Plot the PC cosine sims
@@ -623,7 +640,7 @@ def main() -> None:
     main_helper_plot_pc_cosine_sims(
         comparer,
         extracted_activations_flattened,
-        global_plot_folder_path
+        global_plot_folder_path,
     )
 
     # 9. Plot the PC distribution projections
@@ -631,7 +648,8 @@ def main() -> None:
     main_helper_plot_distribution_pc_projections(
         comparer,
         extracted_activations_flattened,
-        global_plot_folder_path
+        global_plot_folder_path,
+        n_pcs=n_pcs
     )
 
     # 10. Plot the PC error projections
@@ -639,7 +657,8 @@ def main() -> None:
     main_helper_plot_errors_pc_projections(
         comparer,
         extracted_activations_flattened,
-        global_plot_folder_path
+        global_plot_folder_path,
+        n_pcs=n_pcs
     )
     print("="*50 + " [Done!] " + "="*50) # DEBUG
 
