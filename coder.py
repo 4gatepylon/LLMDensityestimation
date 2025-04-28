@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from sklearn.metrics.pairwise import cosine_similarity
 import matplotlib.gridspec as gridspec # Import gridspec
-from checkpoint_fs import save_checkpoint
+from checkpoint_fs import save_checkpoint, load_checkpoint
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 1.  Single‑stage Projected VQ
@@ -353,7 +353,10 @@ class ProjectedVQ(nn.Module):
         return recon
 
     # ---------- 3) TRAINING FORWARD ----------
-    def enc_dec_forward(self, x: torch.Tensor, *, hard: bool = False, return_prob: bool = False) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def enc_dec_forward(self, x: torch.Tensor, *, hard: bool = False, return_prob: bool = False) -> (
+            tuple[torch.Tensor, torch.Tensor] | 
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    ):
         """
         This should be roughyl the same as `forward` but it uses encode and decode
         instead. We unit test this in the test_coder.py file.
@@ -411,6 +414,96 @@ class ProjectedVQ(nn.Module):
 # ──────────────────────────────────────────────────────────────────────────────
 class ResidualVQ(nn.Module):
     """Stack *n* `ProjectedVQ`s; each encodes residual of predecessors."""
+
+    @staticmethod
+    def infer_hyperparameters(state_dict: dict) -> dict:
+        print("Inferring model structure from old state_dict...")
+        inferred_h = {}
+        max_stage = -1
+        book_keys_stage0 = []
+
+        # Find max stage index and keys for stage 0
+        for key in state_dict.keys():
+            if key.startswith('blocks.'):
+                try:
+                    parts = key.split('.')
+                    stage_idx = int(parts[1])
+                    max_stage = max(max_stage, stage_idx)
+                    if stage_idx == 0:
+                        book_keys_stage0.append(key)
+                except (IndexError, ValueError):
+                    print(f"Warning: Could not parse stage index from key: {key}")
+                    continue
+
+        if max_stage == -1:
+            raise ValueError("Could not determine number of stages from state_dict keys.")
+        inferred_h['stages'] = max_stage + 1
+        print(f"  Inferred stages: {inferred_h['stages']}")
+
+        # Infer other params from stage 0 keys/shapes
+        try:
+            # Infer dim and num_books from biases or projector
+            if 'blocks.0.biases' in state_dict:
+                bias_shape = state_dict['blocks.0.biases'].shape
+                inferred_h['num_books'] = bias_shape[0]
+                inferred_h['dim'] = bias_shape[1]
+            elif 'blocks.0.projector' in state_dict:
+                proj_shape = state_dict['blocks.0.projector'].shape
+                inferred_h['num_books'] = proj_shape[0]
+                inferred_h['dim'] = proj_shape[2]
+            else:
+                raise KeyError("Could not find 'blocks.0.biases' or 'blocks.0.projector' to infer dim/books.")
+            print(f"  Inferred num_books: {inferred_h['num_books']}")
+            print(f"  Inferred dim: {inferred_h['dim']}")
+
+            # Infer num_codes and rank from codebook
+            if 'blocks.0.codebook' in state_dict:
+                cb_shape = state_dict['blocks.0.codebook'].shape
+                if cb_shape[0] != inferred_h['num_books']:
+                    print(f"Warning: num_books mismatch between codebook ({cb_shape[0]}) and bias/projector ({inferred_h['num_books']}). Using codebook shape.")
+                    inferred_h['num_books'] = cb_shape[0]
+                inferred_h['num_codes'] = cb_shape[1]
+                inferred_h['rank'] = cb_shape[2]
+            else:
+                raise KeyError("Could not find 'blocks.0.codebook' to infer codes/rank.")
+            print(f"  Inferred num_codes: {inferred_h['num_codes']}")
+            print(f"  Inferred rank: {inferred_h['rank']}")
+
+            # Make reasonable guesses for other params not inferrable from state_dict
+            inferred_h['k_init'] = 0.1 # Cannot infer initial value
+            inferred_h['gamma'] = 0.03 # Cannot infer reliably
+            inferred_h['orth_lambda'] = 0.0 # Cannot infer reliably
+            inferred_h['normalize'] = False # Cannot infer reliably
+            inferred_h['l1_threshold'] = 1e-3 # Default, will be overridden by CLI arg anyway
+            inferred_h['temp_target'] = 0.1 # Cannot infer reliably
+            inferred_h['temp_factor'] = 0.001 # Cannot infer reliably
+            print("  Set defaults for non-inferrable hyperparameters (gamma, orth, normalize, etc.)")
+
+        except Exception as e:
+            raise ValueError(f"Failed to infer hyperparameters from state_dict: {e}")
+
+        return inferred_h
+
+    @staticmethod
+    def load_from_checkpoint(checkpoint_path: str, **vq_kwargs):
+        # NOTE inference of hyperparameters is copied from `sparse_finetune_vq.py`
+        H, A = load_checkpoint(checkpoint_path, ResidualVQ.infer_hyperparameters)
+        vq = ResidualVQ(
+            stages=H['stages'],
+            dim=H['dim'],
+            num_books=H['num_books'],
+            num_codes=H['num_codes'],
+            rank=H['rank'],
+            k_init=H['k_init'], # Loaded k will override this anyway
+            gamma=H['gamma'],
+            orth_lambda=H['orth_lambda'],
+            normalize=H['normalize'],
+            device="cpu", # Use current device arg
+            l1_threshold=H["l1_threshold"], # *** Use the l1_threshold for *this* run ***
+            # temp_target/factor not included as they are loss terms usually set per-run
+        )
+        vq.load_state_dict(A)
+        return vq
 
     def __init__(self, stages: int = 1, **vq_kwargs):
         super().__init__()
