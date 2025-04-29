@@ -10,3 +10,5 @@ numpy
 joblib
 argparse
 click
+circuitvis
+boto3
