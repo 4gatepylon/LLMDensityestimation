@@ -178,6 +178,7 @@ runs/
 
 # generic stuff we usually wanna avoid
 deleteme*
+deletme*
 
 *.html
 gpt2_activations/
@@ -185,3 +186,6 @@ gpt2_small_activations/
 sae_sans_plots/
 sae_sans_old_plots/
 !sans_sae_viz_template.html
+
+# Really annoying lmao
+.DS_Store
