@@ -172,3 +172,18 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+deleteme*
+deletme*
+
+ checkpoints_sparse/
+codebook_pca_sparse/
+gpt2_small_activations/
+models_safetensors/
+runs/
+sae_sans_old_plots/
+sae_sans_plots/
+sans_sae_plots_pc4/
+vis.html
+wandb/
+checkpoints_sparse/
