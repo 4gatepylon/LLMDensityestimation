@@ -189,3 +189,16 @@ sae_sans_old_plots/
 
 # Really annoying lmao
 .DS_Store
+
+# Random shit that we've generated fml feelsbadman
+checkpoints_sparse/
+codebook_pca_sparse/
+cuda_memory_usage.txt
+models_safetensors/
+sae_positional_encodings_eda/
+sae_shrinks_stuff.png
+sae_shrinks_stuff_clamped.png
+sae_shrinks_stuff_clamped2med.png
+sans_sae_density2err.ipynb
+sans_sae_plots_pc4/
+wandb/
