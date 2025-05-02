@@ -515,13 +515,10 @@ def main() -> None:
                         # --- Explicitly convert to standard Python string --- END
                         tag_stripped = tag_as_py_str.strip() # Strip the standard string
                         print(f"  DEBUG: repr(str(tag).strip()): {repr(tag_stripped)}") # DEBUG STRIPPED
-                        regex_pattern = r"token_(\\d+)"
+                        regex_pattern = r"token_(\d+)" # Use raw string with single backslash for \d
                         print(f"  DEBUG: Regex pattern: '{regex_pattern}'")
                         match_result = re.match(regex_pattern, tag_stripped) # USE STRIPPED STANDARD STRING
                         print(f"  DEBUG: re.match(pattern, tag_stripped) result: {match_result}")
-                        search_result = re.search(regex_pattern, tag_stripped) # TRY SEARCH on standard string
-                        print(f"  DEBUG: re.search(pattern, tag_stripped) result: {search_result}") # DEBUG SEARCH
-                        # --- MORE DEBUGGING --- END
 
                         # Use the match result if it worked
                         match = match_result
