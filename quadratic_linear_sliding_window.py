@@ -4,7 +4,10 @@ from __future__ import annotations
 Almost entirely copied from `quadratic.ipynb` and trying to train a
 multi-token linear predictor for SAE error.
 """
-
+import time
+import click
+import contextlib
+from pathlib import Path
 import gc
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from sae_lens import SAE  # pip install sae-lens
@@ -56,7 +59,13 @@ def get_model(model_name: str = "google/gemma-2-2b"):
 def get_tokenizer(model_name: str = "google/gemma-2-2b"):
     return AutoTokenizer.from_pretrained(model_name)
 
-def get_dataset(dataset_name: str = "stas/openwebtext-10k", batch_size: Optional[int] = None, tokenizer: Optional[AutoTokenizer] = None):
+def get_dataset(
+        dataset_name: str = "stas/openwebtext-10k",
+        batch_size: Optional[int] = None,
+        tokenizer: Optional[AutoTokenizer] = None,
+        # Context setup information
+        context_length: int = 128,
+    ):
     if tokenizer is None:
         raise ValueError("Tokenizer is required for `get_dataset`")
     dataset_name = "stas/openwebtext-10k"  # yolo
@@ -68,7 +77,7 @@ def get_dataset(dataset_name: str = "stas/openwebtext-10k", batch_size: Optional
         tokenizer=tokenizer,  # type: ignore
         streaming=True,
         # NOTE: all these have context 128
-        max_length=128,  # sae.cfg.context_size,
+        max_length=context_length,  # sae.cfg.context_size,
         add_bos_token=True,  # sae.cfg.prepend_bos,
     )["tokens"]
     tokens = tokens.to("cuda")  # eh
@@ -76,7 +85,15 @@ def get_dataset(dataset_name: str = "stas/openwebtext-10k", batch_size: Optional
         tokens = tokens[:batch_size]
     return tokens
 
-def get_activations(model_name: str = "google/gemma-2-2b", layer: int = 20, return_raw: bool = False, n_batch: int = 10_000):
+def get_activations(
+        model_name: str = "google/gemma-2-2b",
+        layer: int = 20,
+        return_raw: bool = False,
+        n_batch: int = 10_000,
+        # Context setup information
+        context_length: int = 500,
+        inference_batch_size: int = 100,
+    ):
     torch.set_grad_enabled(False)
     with torch.no_grad():
         """
@@ -89,8 +106,13 @@ def get_activations(model_name: str = "google/gemma-2-2b", layer: int = 20, retu
 
         # GEt the full dataset
         dataset_name = "stas/openwebtext-10k"  # yolo
-        tokens = get_dataset(dataset_name, batch_size=n_batch, tokenizer=tokenizer)
-
+        tokens = get_dataset(
+            dataset_name=dataset_name,
+            batch_size=n_batch,
+            tokenizer=tokenizer,
+            # Context setup information
+            context_length=context_length,
+        )
     """
     Collect some output activations.
     """
@@ -108,9 +130,8 @@ def get_activations(model_name: str = "google/gemma-2-2b", layer: int = 20, retu
     else:
         handle = model.model.layers[layer].register_forward_hook(gather_target_act_hook)
     try:
-        batch_size = 100
-        for i in tqdm.trange(0, tokens.shape[0], batch_size):
-            j = min(i + batch_size, tokens.shape[0])
+        for i in tqdm.trange(0, tokens.shape[0], inference_batch_size, desc=f"Forward pass @ inference batch size={inference_batch_size}"):
+            j = min(i + inference_batch_size, tokens.shape[0])
             model.forward(tokens[i:j])
     finally:
         handle.remove()
@@ -131,7 +152,7 @@ def get_activations(model_name: str = "google/gemma-2-2b", layer: int = 20, retu
         -1, collected_outputs.shape[-1]
     )
     activations = collected_outputs_flat[~tokens_is_special_flat, :]
-    print(activations.shape)  # These are the ones we will use to understand our SAE
+    print("activations shape on return=", activations.shape)  # These are the ones we will use to understand our SAE; fmt: skip
     return activations
 
 class QuadraticFeatureMap:
@@ -318,33 +339,6 @@ class NonLinearProbe(torch.nn.Module):
         
         return 1.0 - ss_res / ss_tot
 
-# TESTING
-if __name__ == "__main__":
-    # Example usage - DEBUG by o3
-    torch.manual_seed(0)
-    N, d, k = 1024, 64, 32
-    X = torch.randn(N, d)
-    true_W_quadratic = torch.randn(d + d * (d + 1) // 2 + 1, k) * 0.1  # bias + linear + quad
-    true_W_linear = torch.randn(d + 1, k) * 0.1  # linear + bias
-    # NOTE the first term of linear will be bias...
-    true_W_linear_as_quadratic = torch.cat([true_W_linear, torch.zeros(d*(d+1)//2, k)], dim=0)
-    fmap = QuadraticFeatureMap(include_bias=True, include_linear=True)
-    Φ = fmap(X)
-    print("phi shape:", Φ.shape, f"from bias={1} plus quadratic={d*(d+1)//2} + linear={d}")
-    y = Φ @ true_W_quadratic + 0.01 * torch.randn(N, k)  # synthetic targets
-    y_linear = Φ @ true_W_linear_as_quadratic + 0.01 * torch.randn(N, k)  # synthetic targets
-
-    probe = NonLinearProbe(fmap, reg_lambda=1e-3)
-    probe_batched = NonLinearProbe(fmap, reg_lambda=1e-3)
-    probe_on_linear = NonLinearProbe(fmap, reg_lambda=1e-3)
-    probe.fit(X, y)
-    probe_batched.fit_batched(X, y)
-    probe_on_linear.fit(X, y_linear)
-    print("R²:", probe.r2(X, y))
-    print("R² batched:", probe_batched.r2(X, y))
-    print("R² on linear targets:", probe_on_linear.r2(X, y_linear)) # NOTE it should fit this too!
-    print("R² batched on linear targets:", probe_on_linear.r2_batched(X, y_linear))
-
 # Create a linear feature map for comparison
 class LinearFeatureMap:
     """Linear feature expansion with optional bias.
@@ -375,25 +369,6 @@ class LinearFeatureMap:
         else:
             return x
 
-# TESTING
-if __name__ == "__main__":
-    N, d, k = 1024, 64, 32
-    X = torch.randn(N, d)
-    true_W_linear = torch.randn(d + 1, k) * 0.1  # linear + bias
-    linear_fmap = LinearFeatureMap()
-    Φ_linear = linear_fmap(X)
-    y_linear = Φ_linear @ true_W_linear + 0.01 * torch.randn(N, k)  # synthetic targets
-    y_nonlinear = Φ @ true_W_quadratic + 0.01 * torch.randn(N, k)  # synthetic targets
-
-    # Technically a LINEAR probe - show that it does not work on the quadratic case...
-    linear_probe = NonLinearProbe(linear_fmap, reg_lambda=1e-3)
-    linear_probe.fit(X, y)
-    linear_probe_on_quad = NonLinearProbe(linear_fmap, reg_lambda=1e-3)
-    linear_probe_on_quad.fit(X, y_nonlinear)
-    linear_probe_on_quad.r2(X, y_nonlinear)
-    print("Linear R²:", linear_probe.r2(X, y))
-    print("Linear R² on quadratic targets:", linear_probe_on_quad.r2(X, y_nonlinear))
-
 def apply_sae(
     activations: Float[Tensor, "n_samples n_features"],
     sae: SAE,
@@ -403,11 +378,13 @@ def apply_sae(
     activations_device = activations.device
     sae_device = next(p.device for p in sae.parameters())
     for i in tqdm.trange(
-        0, activations.shape[0], batch_size, desc="SAE forward (application)"
+        0, activations.shape[0], batch_size, desc=f"SAE forward (application) @ batch size={batch_size}"
     ):
         j = min(i + batch_size, activations.shape[0])
         activations_batch = activations[i:j]
         activations_batch = activations_batch.to(sae_device)
+        # print("activations_batch.shape:", activations_batch.shape) # DEBUG
+        # print("sae_parameters:", {k: str(v.shape) for k, v in sae.named_parameters()}) # DEBUG
         recons.append(sae(activations_batch).to(activations_device))
     for r in recons:
         r.cpu() # TODO(Adriano) fking OOM
@@ -425,6 +402,20 @@ def create_sliding_windows(tensor, window_size):
     # Channel dimension should not be touched
     # 1D spatial dimension
     # tensor = einops.rearrange(tensor, "b s d -> b d s")
+    # print("unfolding tensor.shape:", tensor.shape) # DEBUG
+    # Window sizes:  80%|████████  | 4/5 [00:03<00:00,  1.05it/s]
+    # Window sizes:  80%|████████  | 4/5 [00:03<00:00,  1.15it/s]
+    # Traceback (most recent call last):
+    # File "/mnt/align4_drive2/adrianoh/git2/neel-nanda-mats-2025/LLMDensityestimation/quadratic_linear_sliding_window.py", line 569, in main
+    #     r2s = get_sliding_windows_r2(
+    #         ^^^^^^^^^^^^^^^^^^^^^^^
+    # File "/mnt/align4_drive2/adrianoh/git2/neel-nanda-mats-2025/LLMDensityestimation/quadratic_linear_sliding_window.py", line 489, in get_sliding_windows_r2
+    #     sliding_activations = create_sliding_windows(activations, window_size)
+    #                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    # File "/mnt/align4_drive2/adrianoh/git2/neel-nanda-mats-2025/LLMDensityestimation/quadratic_linear_sliding_window.py", line 404, in create_sliding_windows
+    #     windows = tensor.unfold(size=window_size, step=1, dimension=1)
+    #             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    # RuntimeError: maximum size for tensor at dimension 1 is 18 but size is 20
     windows = tensor.unfold(size=window_size, step=1, dimension=1)
     expected_shape = (batch, seq - window_size + 1, d_model, window_size)
     assert windows.shape == expected_shape, f"windows.shape: {windows.shape}, expected_shape: {expected_shape}" # fmt: skip
@@ -432,19 +423,93 @@ def create_sliding_windows(tensor, window_size):
     assert windows.shape == (batch * (seq - window_size + 1), d_model * window_size), f"windows.shape: {windows.shape}" # fmt: skip
     return windows
 
-def get_sliding_windows_r2(model_name: str, layer: int, window_sizes: list[int], reg_lambdas: list[float], use_recons: bool = True) -> list[float]:
+def get_sliding_windows_r2(
+        model_name: str,
+        layer: int,
+        window_sizes: list[int],
+        reg_lambdas: list[float],
+        use_recons: bool = True,
+        debug: bool = False,
+        # Context setup information
+        start_context_at: int = 200,
+        end_context_at: int = -10,
+        context_length: int = 500,
+        sae_batch_size: int = 500,
+        probe_batch_size: int = 1024,
+        inference_batch_size: int = 100,
+    ) -> list[float]:
     #### 1. GET ACTIVATIONS ####
-    activations, _, _ = get_activations(model_name=model_name, layer=20, return_raw=True)#, n_batch=100)
-    activations_prev_layer, _, _ = get_activations(model_name=model_name, layer=21, return_raw=True)#, n_batch=100)
+    if not debug:
+        print("="*50 + " GETTING REAL ACTIVATIONS " + "="*50)
+        activations, is_special_activations, _ = get_activations(
+            model_name=model_name,
+            layer=layer,
+            return_raw=True,
+            # Context setup information
+            context_length=context_length,
+            inference_batch_size=inference_batch_size,
+        )
+        activations_prev_layer, is_special_activations_prev_layer, _ = get_activations(
+            model_name=model_name,
+            layer=layer-1,
+            return_raw=True,
+            # Context setup information
+            context_length=context_length,
+            inference_batch_size=inference_batch_size,
+        )
+    else:
+        print("="*50 + " USING FAKE (DEBUG) ACTIVATIONS " + "="*50)
+        # actiations = get_activations(model_name="google/gemma-2-2b", layer=20, return_raw=True, n_batch=10)
+        # print(actiations[0].shape) # FADFASDFASFD
+        d_model = 2304 if model_name == "google/gemma-2-2b" else 768 if model_name == "gpt2" else None
+        assert d_model is not None, f"d_model: {d_model}, model_name: {model_name}"
+        # activations = torch.randn(1024, 256, d_model) # DEBUG
+        # activations_prev_layer = torch.randn(1024, 256, d_model) # DEBUG
+        activations, is_special_activations, _ = get_activations(
+            model_name=model_name,
+            layer=layer,
+            return_raw=True,
+            # Context setup information
+            context_length=context_length,
+            n_batch=500, # <---- this is the debug mode effect (around 20x smaller)
+            inference_batch_size=inference_batch_size,
+        )
+        activations_prev_layer, is_special_activations_prev_layer, _ = get_activations(
+            model_name=model_name,
+            layer=layer-1,
+            return_raw=True,
+            # Context setup information
+            context_length=context_length,
+            n_batch=500, # <---- this is the debug mode effect (around 20x smaller)
+            inference_batch_size=inference_batch_size,
+        )
     # Exclude EOS/BOS
-    activations = activations[:, 1:-10, :]
-    activations_prev_layer = activations_prev_layer[:, 1:-10, :]
+    activations = activations[:, start_context_at:end_context_at, :]
+    activations_prev_layer = activations_prev_layer[:, start_context_at:end_context_at, :]
+    
+    # Count how many special activations there are so we can take this into account tbh
+    print("================")
+    print("How many activations are special tokens?")
+    print("================")
+    is_special_activations = is_special_activations[:, start_context_at:end_context_at, :]
+    is_special_activations_prev_layer = is_special_activations_prev_layer[:, start_context_at:end_context_at, :]
+    n_activations_special = torch.sum(is_special_activations).item()
+    n_activations_prev_layer_special = torch.sum(is_special_activations_prev_layer).item()
+    n_activations_tot = activations.shape[0] * activations.shape[1]
+    frac_activations_special = n_activations_special / n_activations_tot
+    frac_activations_prev_layer_special = n_activations_prev_layer_special / n_activations_tot
+    print(f"n_activations_special={n_activations_special}, n_activations_prev_layer_special={n_activations_prev_layer_special}, n_activations_tot={n_activations_tot}")
+    print(f"frac_activations_special={frac_activations_special}, frac_activations_prev_layer_special={frac_activations_prev_layer_special}")
+    print("================")
+    
+
     #
     batch, seq, d_model = activations.shape
 
     #### 2. GET RESIDUALS ####
+    print("="*50 + " GETTING SAE RECONSTRUCTION " + "="*50)
     sae = get_sae(model_name=model_name, layer=layer).cuda()
-    recons = apply_sae(activations.reshape(batch * seq, d_model), sae, batch_size=1024)
+    recons = apply_sae(activations.reshape(batch * seq, d_model), sae, batch_size=sae_batch_size)
     recons = recons.reshape(batch, seq, d_model)
     if use_recons:
         recons, activations = activations, recons
@@ -456,6 +521,7 @@ def get_sliding_windows_r2(model_name: str, layer: int, window_sizes: list[int],
     torch.cuda.empty_cache()
 
 
+    print("="*50 + " GETTING R2 SCORES " + "="*50)
     r2_scores = []
     for window_size in tqdm.tqdm(window_sizes, desc="Window sizes"):
         #### 3. CREATE SLIDING WINDOWS ####
@@ -475,13 +541,15 @@ def get_sliding_windows_r2(model_name: str, layer: int, window_sizes: list[int],
         torch.cuda.empty_cache()
         # Don't do the print cuz it's logspam :/
         for reg_lambda in reg_lambdas:#tqdm.tqdm(reg_lambdas, desc="Regularization lambdas"):
-            assert isinstance(reg_lambda, float)
-            assert isinstance(window_size, int)
-            assert isinstance(use_recons, bool)
+            assert isinstance(reg_lambda, float), f"reg_lambda: {reg_lambda}, type: {type(reg_lambda)}"
+            assert isinstance(window_size, int), f"window_size: {window_size}, type: {type(window_size)}"
+            assert isinstance(use_recons, bool), f"use_recons: {use_recons}, type: {type(use_recons)}"
             try:
+                linear_fmap = LinearFeatureMap(include_bias=True)
                 linear_probe = NonLinearProbe(linear_fmap, reg_lambda=reg_lambda, device="cuda")
-                linear_probe.fit(X, y, batch_size=1024)
-                r2_score = linear_probe.r2_batched(X, y, batch_size=1024)
+                linear_probe.fit(X, y, batch_size=probe_batch_size)
+                r2_score = linear_probe.r2_batched(X, y, batch_size=probe_batch_size)
+                print(f"r2_score @ model={model_name}, layer={layer}, window_size={window_size}, reg_lambda={reg_lambda}, use_recons={use_recons}: {r2_score}")
                 # Make sure it's JSON serializeable
                 assert isinstance(r2_score, float)
                 # Save
@@ -503,36 +571,118 @@ def get_sliding_windows_r2(model_name: str, layer: int, window_sizes: list[int],
 # position on our results. This results in a dataset of about 247k activations. 
 #
 ####################################################
-def main():
-    models = ["google/gemma-2-2b", "gpt2"]
-    layersets = [list(range(26)), list(range(12))]
-    try:
-        del activations
-    except:
-        pass
-    try:
-        del residuals
-    except:
-        pass
-    reg_lambdas = [1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2, 1e-1]
-    window_sizes = [1, 3, 5, 10, 20]
-    use_recons = [True, False]
-    for model, layers in zip(models, layersets):
-        for layer in layers:
-            try:
-                r2s = get_sliding_windows_r2(model, layer, window_sizes, reg_lambdas, use_recons)
-                print(r2s)
-                with open(f"r2s_{model.replace('/', '_')}_{layer}.json", "w") as f:
-                    json.dump(r2s, f, indent=4)
-            except:
-                print("="*100)
-                print(f"error @ model={model}, layer={layer}")
-                print("="*100)
-                traceback.print_exc()
-                print("="*100)
-            finally:
-                gc.collect()
-                torch.cuda.empty_cache()
+@click.command()
+@click.option("--debug", "-d", is_flag=True, help="Use debug mode")
+@click.option("--model", "-m", type=str, help="Model name", default="")
+@click.option("--layer-start", "-lstart", type=int, help="Layer start", default=1)
+@click.option("--layer-end", "-lend", type=int, help="Layer end", default=-1)
+def main(debug: bool, model: str, layer_start: int, layer_end: int):
+    # TODO(Adriano) support multi-GPU deployment please!
+    # (and large streaming datasets of activations)
+    output_folder = Path("quadratic_linear_sliding_window_results")
+    output_folder.mkdir(parents=True, exist_ok=False)
+    output_log_outfile = output_folder / "stdout.log"
+    output_log_errfile = output_folder / "stderr.log"
+    models = ["google/gemma-2-2b", "gpt2"] if model == "" else [model]
+
+    # Set the layers to go over
+    if layer_end == -1:
+        layer_end = 26 if model == "google/gemma-2-2b" else 12
+    if layer_start == -1:
+        layer_start = 1
+    model2layersets = {
+        "google/gemma-2-2b": list(range(layer_start, layer_end)),
+        "gpt2": list(range(layer_start, layer_end)),
+    }
+    layersets = [model2layersets[m] for m in models]
+    with open(output_log_outfile, "w") as f_out:
+        with open(output_log_errfile, "w") as f_err:
+            with contextlib.redirect_stdout(f_out):
+                with contextlib.redirect_stderr(f_err):
+                    # NOTE: we skip the first layer since we use a previous layer for prediction too
+                    try:
+                        del activations
+                    except:
+                        pass
+                    try:
+                        del residuals
+                    except:
+                        pass
+                    # TODO(Adriano) parameterize this stuff
+                    reg_lambdas = [1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2, 1e-1]
+                    window_sizes = [1, 3, 5, 10, 20]
+                    use_recons_sets = [True, False]
+                    #
+                    # In the paper they say 
+                    # We use 300 contexts of 1024 tokens from the uncopywrited subset of the Pile (Gao et al., 2020) and then
+                    # filter to only activations of tokens after position 200 in each context, as Lieberum et al. (2024) find that
+                    # earlier tokens are easier for sparse autoencoders to reconstruct, and we wish to ignore the effect of token
+                    # position on our results. This results in a dataset of about 247k activations. For linear regressions, we use
+                    # a random subset of size 150k as training examples (since all models have a dimension of less than 5000,
+                    # this prevents overfitting) and report the R2 on the other 97k activations. For linear transformations to a
+                    # multi-dimensional output, we report the average R2 across dimensions. We include bias terms in our linear
+                    # regressions but omit them from equations for simplicit
+                    #
+                    # NOTE however for JBLoom SAEs this won't work since they SUCK at later context, so we need to focus
+                    # on earlier contexts
+                    start_context_at = 200 if model == "google/gemma-2-2b" else 1 if model == "gpt2" else None
+                    end_context_at = -10
+                    context_length = 300 if model == "google/gemma-2-2b" else 128 if model == "gpt2" else None
+                    # Batch sizes are critial to not OOM
+                    # TODO(Adriano) why does batch size shrink SO DAMN MUCH?
+                    inference_batch_size = 10 if model == "google/gemma-2-2b" else 1024 if model == "gpt2" else None
+                    probe_batch_size = 1024
+                    sae_batch_size = 500
+                    # ...
+                    # ...
+                    assert start_context_at is not None and end_context_at is not None and context_length is not None and inference_batch_size is not None and probe_batch_size is not None and sae_batch_size is not None, f"start_context_at: {start_context_at}, end_context_at: {end_context_at}, context_length: {context_length}, inference_batch_size: {inference_batch_size}, probe_batch_size: {probe_batch_size}, sae_batch_size: {sae_batch_size}, model: {model}" # fmt: skip
+                    for use_recons in use_recons_sets:
+                        for model, layers in zip(models, layersets):
+                            for layer in layers:
+                                try:
+                                    print("=" * 50 + " CALCULATING R2S " + "=" * 50)
+                                    hit1 = False
+                                    while inference_batch_size >= 1 and not hit1:
+                                        hit1 = inference_batch_size == 1
+                                        try:
+                                            r2s = get_sliding_windows_r2(
+                                                model_name=model,
+                                                layer=layer,
+                                                window_sizes=window_sizes,
+                                                reg_lambdas=reg_lambdas,
+                                                use_recons=use_recons,
+                                                debug=debug,
+                                                # Context setup information
+                                                start_context_at=start_context_at,
+                                                end_context_at=end_context_at,
+                                                context_length=context_length,
+                                                # Batch sizes... (fkin OOM kms)
+                                                inference_batch_size=inference_batch_size,
+                                                probe_batch_size=probe_batch_size,
+                                                sae_batch_size=sae_batch_size,
+                                            )
+                                            print(r2s)
+                                            with open(output_folder / f"r2s_{model.replace('/', '_')}_{layer}_{'recons' if use_recons else 'no_recons'}.json", "w") as f:
+                                                json.dump(r2s, f, indent=4)
+                                            print("=" * 50 + " DONE WRITING R2S " + "=" * 50)
+                                            gc.collect()
+                                            torch.cuda.empty_cache()
+                                            for _ in tqdm.trange(10, desc="Sleeping for 10 seconds (please clear cache plz plz)"):
+                                                time.sleep(1)
+                                            break
+                                        except:
+                                            inference_batch_size //= 2
+                                            inference_batch_size = max(1, inference_batch_size)
+                                            print(f"OOM, trying again with batch size={inference_batch_size}")
+                                except:
+                                    print("="*100)
+                                    print(f"error @ model={model}, layer={layer}")
+                                    print("="*100)
+                                    traceback.print_exc()
+                                    print("="*100)
+                                finally:
+                                    gc.collect()
+                                    torch.cuda.empty_cache()
 
 if __name__ == "__main__":
     main()
