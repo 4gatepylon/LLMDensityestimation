@@ -1,2 +1,2 @@
 # LLMDensityestimation
-A toolkit to estimate the density of LLM activations based on activations. This can help do things like anomaly detection and generally pushes forward the field of interpretability.
+A Motley collection of experiments (mostly in branches) for understanding the distribution of activations in gpt2 and also to try various SAE related tasks.
